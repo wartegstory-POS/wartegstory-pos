@@ -2,22 +2,33 @@ name: Build Warteg Story POS APK
 
 on:
   workflow_dispatch:
+
   push:
+    branches:
+      - main
     paths:
       - "index.html"
       - "Index.html"
       - "www/**"
+      - "updater.js"
+      - "version.json"
       - "icon.png"
       - "package.json"
+      - "package-lock.json"
       - "capacitor.config.json"
       - ".github/workflows/android.yml"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: warteg-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
@@ -26,7 +37,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -35,7 +46,10 @@ jobs:
           java-version: "17"
 
       - name: Prepare WWW Folder
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p www
 
           if [ ! -f www/index.html ]; then
@@ -44,7 +58,7 @@ jobs:
             elif [ -f Index.html ]; then
               cp Index.html www/index.html
             else
-              echo "ERROR: HTML POS tidak ditemukan"
+              echo "ERROR: HTML POS tidak ditemukan."
               exit 1
             fi
           fi
@@ -52,16 +66,125 @@ jobs:
           test -s www/index.html
 
       - name: Check Project Files
+        shell: bash
         run: |
-          test -f www/index.html
-          test -f icon.png
-          test -f package.json
-          test -f capacitor.config.json
+          set -euo pipefail
+
+          test -s www/index.html
+          test -s icon.png
+          test -s package.json
+          test -s capacitor.config.json
+          test -s updater.js
+          test -s version.json
+
+      - name: Validate Version
+        id: version
+        shell: bash
+        run: |
+          node <<'JS'
+          const fs = require("fs");
+
+          const metadata = JSON.parse(
+            fs.readFileSync("version.json", "utf8")
+          );
+
+          if (!/^\d+\.\d+\.\d+$/.test(metadata.version)) {
+            throw new Error(
+              "Version harus memakai format angka seperti 1.0.0"
+            );
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `value=${metadata.version}\n`
+          );
+          JS
+
+      - name: Check Release Does Not Exist
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASES=$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+
+          export RELEASES
+
+          node <<'JS'
+          const releases = JSON.parse(process.env.RELEASES);
+          const tag = `v${process.env.VERSION}`;
+
+          if (releases.some(release => release.tag_name === tag)) {
+            throw new Error(
+              `Release ${tag} sudah ada. ` +
+              "Naikkan version.json sebelum Run workflow lagi."
+            );
+          }
+          JS
 
       - name: Install Dependencies
         run: npm install
 
+      - name: Build Web Updater
+        shell: bash
+        run: |
+          node <<'JS'
+          const fs = require("fs");
+          const esbuild = require("esbuild");
+
+          const metadata = JSON.parse(
+            fs.readFileSync("version.json", "utf8")
+          );
+
+          esbuild.buildSync({
+            entryPoints: ["updater.js"],
+            bundle: true,
+            format: "iife",
+            platform: "browser",
+            target: ["chrome90"],
+            outfile: "www/warteg-updater.js",
+            define: {
+              __WEB_VERSION__: JSON.stringify(metadata.version)
+            }
+          });
+
+          const path = "www/index.html";
+          let html = fs.readFileSync(path, "utf8");
+
+          html = html.replace(
+            /<script\b[^>]*\bsrc=["'](?:\.\/)?warteg-updater\.js["'][^>]*>\s*<\/script>/gi,
+            ""
+          );
+
+          if (!/<\/body>/i.test(html)) {
+            throw new Error(
+              "www/index.html tidak punya tag penutup </body>"
+            );
+          }
+
+          html = html.replace(
+            /<\/body>/i,
+            '<script src="warteg-updater.js"></script></body>'
+          );
+
+          fs.writeFileSync(path, html);
+
+          fs.copyFileSync(
+            "version.json",
+            "www/version.json"
+          );
+
+          console.log(
+            `Web updater siap untuk versi ${metadata.version}`
+          );
+          JS
+
       - name: Prepare Capacitor Config
+        shell: bash
         run: |
           python3 - <<'PY'
           import json
@@ -74,41 +197,113 @@ jobs:
           config.pop("server", None)
           config["webDir"] = "www"
 
+          plugins = config.setdefault("plugins", {})
+          updater = plugins.setdefault("CapacitorUpdater", {})
+          updater["autoUpdate"] = False
+
           with open(path, "w", encoding="utf-8") as f:
               json.dump(config, f, indent=2)
 
           print("Capacitor config ready")
           PY
 
-      - name: Setup Android SDK Packages
+      - name: Check Web Build
+        run: npm run build
+
+      - name: Package Web Update
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          cd www
+          zip -r ../web-update.zip .
 
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | sort -V | tail -n 1)
+      - name: Setup Android SDK Packages
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager tidak ditemukan"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -z "$SDK_ROOT" ]; then
+            echo "ERROR: Android SDK tidak ditemukan."
             exit 1
           fi
 
-          yes | "$SDKMANAGER" --licenses || true
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" \
+            -type f -name sdkmanager | sort -V | tail -n 1)
 
-          "$SDKMANAGER" "platform-tools"
-          "$SDKMANAGER" "platforms;android-35"
-          "$SDKMANAGER" "build-tools;35.0.0"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager tidak ditemukan."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Add Android Platform
-        run: npx cap add android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
 
       - name: Sync Android
         run: npx cap sync android
 
-      - name: Generate Launcher Icons
+      - name: Set Android Version
+        env:
+          WEB_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
         run: |
-          pip install pillow
+          python3 - <<'PY'
+          import os
+          import re
+
+          path = "android/app/build.gradle"
+
+          with open(path, encoding="utf-8") as f:
+              content = f.read()
+
+          version_name = os.environ["WEB_VERSION"]
+          version_code = int(os.environ["GITHUB_RUN_NUMBER"])
+
+          content, code_count = re.subn(
+              r"\bversionCode\s+\d+",
+              f"versionCode {version_code}",
+              content
+          )
+
+          content, name_count = re.subn(
+              r'\bversionName\s+["\'][^"\']*["\']',
+              f'versionName "{version_name}"',
+              content
+          )
+
+          if code_count != 1 or name_count != 1:
+              raise RuntimeError(
+                  "Tidak bisa mengubah versi Android."
+              )
+
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(content)
+
+          print(
+              f"versionCode={version_code}, "
+              f"versionName={version_name}"
+          )
+          PY
+
+      - name: Generate Launcher Icons
+        shell: bash
+        run: |
+          python3 -m pip install pillow
 
           python3 - <<'PY'
           from PIL import Image
@@ -125,7 +320,10 @@ jobs:
           }
 
           for density, size in sizes.items():
-              folder = f"android/app/src/main/res/mipmap-{density}"
+              folder = (
+                  "android/app/src/main/res/"
+                  f"mipmap-{density}"
+              )
               os.makedirs(folder, exist_ok=True)
 
               icon = source.resize(
@@ -143,36 +341,106 @@ jobs:
               (432, 432),
               Image.Resampling.LANCZOS
           )
+
           foreground.save(
               f"{folder}/ic_launcher_foreground.png"
           )
 
-          folder = "android/app/src/main/res/mipmap-anydpi-v26"
+          folder = (
+              "android/app/src/main/res/"
+              "mipmap-anydpi-v26"
+          )
           os.makedirs(folder, exist_ok=True)
 
-          xml = '''<?xml version="1.0" encoding="utf-8"?>
+          xml = """<?xml version="1.0" encoding="utf-8"?>
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@android:color/white"/>
               <foreground android:drawable="@drawable/ic_launcher_foreground"/>
-          </adaptive-icon>'''
+          </adaptive-icon>
+          """
 
-          for name in ["ic_launcher.xml", "ic_launcher_round.xml"]:
-              with open(f"{folder}/{name}", "w") as f:
+          for name in [
+              "ic_launcher.xml",
+              "ic_launcher_round.xml"
+          ]:
+              with open(
+                  f"{folder}/{name}",
+                  "w",
+                  encoding="utf-8"
+              ) as f:
                   f.write(xml)
 
           print("Launcher icons generated")
           PY
 
       - name: Build Debug APK
+        shell: bash
         run: |
+          set -euo pipefail
+
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare Downloadable APK
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            "dist/Warteg-Story-POS-v${VERSION}.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Warteg-Story-POS-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload Web Update Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Warteg-Web-Update
+          path: web-update.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="v${VERSION}"
+
+          gh release create "$TAG" \
+            web-update.zip \
+            "dist/Warteg-Story-POS-v${VERSION}.apk" \
+            --target "$GITHUB_SHA" \
+            --title "Warteg Story POS ${VERSION}" \
+            --notes "APK awal dan paket pembaruan web Warteg Story POS ${VERSION}." \
+            --latest
+
+      - name: Build Summary
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          {
+            echo "## Warteg Story POS"
+            echo ""
+            echo "- Versi web: ${VERSION}"
+            echo "- APK: artifact Warteg-Story-POS-APK"
+            echo "- Paket web: artifact Warteg-Web-Update"
+            echo ""
+            echo "Release diterbitkan hanya saat Run workflow manual."
+            echo "APK ini masih debug, bukan build produksi."
+          } >> "$GITHUB_STEP_SUMMARY"
