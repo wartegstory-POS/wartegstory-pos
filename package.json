@@ -1,0 +1,14 @@
+{
+  "name": "warteg-story-pos",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node -e \"const fs=require('fs');if(!fs.existsSync('www/index.html'))throw new Error('www/index.html missing')\"",
+    "cap:sync": "npx cap sync android"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0"
+  }
+}

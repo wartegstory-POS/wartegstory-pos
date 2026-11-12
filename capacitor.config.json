@@ -1,0 +1,13 @@
+{
+  "appId": "com.wartegstory.pos",
+  "appName": "Warteg Story POS",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https",
+    "url": "https://wartegstory-pos.github.io/warteg-story-pos/"
+  }
+}
