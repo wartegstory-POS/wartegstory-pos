@@ -260,13 +260,25 @@ jobs:
           path = Path("android/variables.gradle")
           text = path.read_text(encoding="utf-8")
 
-          text, count = re.subn(
+          text, min_count = re.subn(
+              r"\bminSdkVersion\s*=\s*\d+",
+              "minSdkVersion = 23",
+              text
+          )
+
+          text, compile_count = re.subn(
               r"\bcompileSdkVersion\s*=\s*\d+",
               "compileSdkVersion = 35",
               text
           )
 
-          if count != 1:
+          if min_count != 1:
+              raise RuntimeError(
+                  "minSdkVersion tidak ditemukan atau tidak unik "
+                  "di android/variables.gradle"
+              )
+
+          if compile_count != 1:
               raise RuntimeError(
                   "compileSdkVersion tidak ditemukan atau tidak unik "
                   "di android/variables.gradle"
@@ -315,6 +327,7 @@ jobs:
 
           path.write_text(text, encoding="utf-8")
 
+          print("Min SDK: 23")
           print("Compile SDK: 35")
           print("Android Gradle Plugin: 8.6.1")
           print("Gradle: 8.7")
@@ -493,6 +506,7 @@ jobs:
             echo "## Warteg Story POS"
             echo ""
             echo "- Versi web: ${VERSION}"
+            echo "- Min SDK: 23"
             echo "- Compile SDK: 35"
             echo "- Android Gradle Plugin: 8.6.1"
             echo "- Gradle: 8.7"
