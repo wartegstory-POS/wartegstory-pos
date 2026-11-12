@@ -5,9 +5,5 @@
   "bundledWebRuntime": false,
   "android": {
     "allowMixedContent": true
-  },
-  "server": {
-    "androidScheme": "https",
-    "url": "https://wartegstory-pos.github.io/warteg-story-pos/"
   }
 }
