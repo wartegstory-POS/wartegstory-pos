@@ -1,0 +1,161 @@
+name: Build Warteg Story POS APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "www/**"
+      - "icon.png"
+      - "package.json"
+      - "capacitor.config.json"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Check Project Files
+        run: |
+          test -f www/index.html || {
+            echo "ERROR: www/index.html tidak ditemukan"
+            exit 1
+          }
+
+          test -f icon.png || {
+            echo "ERROR: icon.png tidak ditemukan"
+            exit 1
+          }
+
+          test -f package.json
+          test -f capacitor.config.json
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Prepare Capacitor Config
+        run: |
+          python3 - <<'PY'
+          import json
+
+          path = "capacitor.config.json"
+
+          with open(path, "r", encoding="utf-8") as f:
+              config = json.load(f)
+
+          server = config.get("server", {})
+          server.pop("url", None)
+
+          if server:
+              config["server"] = server
+          else:
+              config.pop("server", None)
+
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(config, f, indent=2)
+
+          print("Capacitor configured for bundled local assets.")
+          PY
+
+      - name: Add Android Platform
+        run: npx cap add android
+
+      - name: Sync Android
+        run: npx cap sync android
+
+      - name: Generate Android Launcher Icon
+        run: |
+          pip install pillow
+
+          python3 - <<'PY'
+          from PIL import Image
+          import os
+
+          source = Image.open("icon.png").convert("RGBA")
+
+          sizes = {
+              "mdpi": 48,
+              "hdpi": 72,
+              "xhdpi": 96,
+              "xxhdpi": 144,
+              "xxxhdpi": 192
+          }
+
+          for density, size in sizes.items():
+              folder = f"android/app/src/main/res/mipmap-{density}"
+              os.makedirs(folder, exist_ok=True)
+
+              icon = source.resize(
+                  (size, size),
+                  Image.Resampling.LANCZOS
+              )
+
+              icon.save(f"{folder}/ic_launcher.png")
+              icon.save(f"{folder}/ic_launcher_round.png")
+
+          folder = "android/app/src/main/res/drawable"
+          os.makedirs(folder, exist_ok=True)
+
+          foreground = source.resize(
+              (432, 432),
+              Image.Resampling.LANCZOS
+          )
+
+          foreground.save(
+              f"{folder}/ic_launcher_foreground.png"
+          )
+
+          folder = "android/app/src/main/res/mipmap-anydpi-v26"
+          os.makedirs(folder, exist_ok=True)
+
+          with open(f"{folder}/ic_launcher.xml", "w") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@android:color/white"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>''')
+
+          with open(f"{folder}/ic_launcher_round.xml", "w") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@android:color/white"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>''')
+
+          print("Launcher icons generated.")
+          PY
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Warteg-Story-POS-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
