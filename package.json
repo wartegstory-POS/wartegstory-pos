@@ -6,9 +6,13 @@
     "build": "node -e \"const fs=require('fs');if(!fs.existsSync('www/index.html'))throw new Error('www/index.html missing')\"",
     "cap:sync": "npx cap sync android"
   },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capgo/capacitor-updater": "lts-v6"
+  },
   "devDependencies": {
     "@capacitor/cli": "^6.0.0",
     "@capacitor/android": "^6.0.0",
-    "@capacitor/core": "^6.0.0"
+    "esbuild": "^0.25.0"
   }
 }
