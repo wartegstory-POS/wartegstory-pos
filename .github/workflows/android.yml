@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - "index.html"
+      - "Index.html"
       - "www/**"
       - "icon.png"
       - "package.json"
@@ -26,34 +28,33 @@ jobs:
         with:
           node-version: 20
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
+          java-version: "17"
 
-      - name: Install Android Build Packages
+      - name: Prepare WWW Folder
         run: |
-          sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
+          mkdir -p www
+
+          if [ ! -f www/index.html ]; then
+            if [ -f index.html ]; then
+              cp index.html www/index.html
+            elif [ -f Index.html ]; then
+              cp Index.html www/index.html
+            else
+              echo "ERROR: HTML POS tidak ditemukan"
+              exit 1
+            fi
+          fi
+
+          test -s www/index.html
 
       - name: Check Project Files
         run: |
-          test -f www/index.html || {
-            echo "ERROR: www/index.html tidak ditemukan"
-            exit 1
-          }
-
-          test -f icon.png || {
-            echo "ERROR: icon.png tidak ditemukan"
-            exit 1
-          }
-
+          test -f www/index.html
+          test -f icon.png
           test -f package.json
           test -f capacitor.config.json
 
@@ -67,22 +68,37 @@ jobs:
 
           path = "capacitor.config.json"
 
-          with open(path, "r", encoding="utf-8") as f:
+          with open(path, encoding="utf-8") as f:
               config = json.load(f)
 
-          server = config.get("server", {})
-          server.pop("url", None)
-
-          if server:
-              config["server"] = server
-          else:
-              config.pop("server", None)
+          config.pop("server", None)
+          config["webDir"] = "www"
 
           with open(path, "w", encoding="utf-8") as f:
               json.dump(config, f, indent=2)
 
-          print("Capacitor configured for bundled local assets.")
+          print("Capacitor config ready")
           PY
+
+      - name: Setup Android SDK Packages
+        run: |
+          set -e
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager | sort -V | tail -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager tidak ditemukan"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" "platform-tools"
+          "$SDKMANAGER" "platforms;android-35"
+          "$SDKMANAGER" "build-tools;35.0.0"
 
       - name: Add Android Platform
         run: npx cap add android
@@ -90,7 +106,7 @@ jobs:
       - name: Sync Android
         run: npx cap sync android
 
-      - name: Generate Android Launcher Icon
+      - name: Generate Launcher Icons
         run: |
           pip install pillow
 
@@ -127,7 +143,6 @@ jobs:
               (432, 432),
               Image.Resampling.LANCZOS
           )
-
           foreground.save(
               f"{folder}/ic_launcher_foreground.png"
           )
@@ -135,24 +150,20 @@ jobs:
           folder = "android/app/src/main/res/mipmap-anydpi-v26"
           os.makedirs(folder, exist_ok=True)
 
-          with open(f"{folder}/ic_launcher.xml", "w") as f:
-              f.write('''<?xml version="1.0" encoding="utf-8"?>
+          xml = '''<?xml version="1.0" encoding="utf-8"?>
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@android:color/white"/>
               <foreground android:drawable="@drawable/ic_launcher_foreground"/>
-          </adaptive-icon>''')
+          </adaptive-icon>'''
 
-          with open(f"{folder}/ic_launcher_round.xml", "w") as f:
-              f.write('''<?xml version="1.0" encoding="utf-8"?>
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-              <background android:drawable="@android:color/white"/>
-              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
-          </adaptive-icon>''')
+          for name in ["ic_launcher.xml", "ic_launcher_round.xml"]:
+              with open(f"{folder}/{name}", "w") as f:
+                  f.write(xml)
 
-          print("Launcher icons generated.")
+          print("Launcher icons generated")
           PY
 
-      - name: Build APK
+      - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
