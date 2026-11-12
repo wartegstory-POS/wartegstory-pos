@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "name": "Warteg Story POS",
-  "releaseNotes": "Uji pembaruan web pertama."
+  "releaseNotes": "Menonaktifkan updater tambahan; menggunakan Update/Patch bawaan."
 }
